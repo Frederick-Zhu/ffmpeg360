@@ -24,6 +24,10 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
 
 #include "avfilter.h"
 #include "formats.h"
@@ -225,6 +229,8 @@ typedef struct ProjectContext {
     // store the original data from frames as texture
     uint8_t *ori_buffer[3];
 
+    float *pOri;
+
 } ProjectContext;
 
 static av_cold void uninit(AVFilterContext *ctx);
@@ -373,6 +379,22 @@ static av_cold int init(AVFilterContext *ctx)
     s->ors = init_vector();
     s->layout = init_vector();
 
+    int fd = open("shared_memory.txt", O_RDONLY, 0644);
+
+    if (fd < 0) {
+        perror("open");
+        exit(2);
+    }
+
+    s->pOri = (float *) mmap(NULL, 12, PROT_READ, MAP_SHARED, fd, 0);
+
+    if (s->pOri == MAP_FAILED) {
+        perror("mmap");
+        exit(3);
+    }
+
+    close(fd);
+
     av_log(ctx, AV_LOG_INFO, "[Project Filter] Initialize OpenGL context\n");
     if(gl_init(ctx))
         return AVERROR(ENOSYS);
@@ -408,6 +430,13 @@ static av_cold void uninit(AVFilterContext *ctx)
     for(i = 0; i < 3; i++)
         if(s->ori_buffer[i] != NULL)
             free(s->ori_buffer[i]);
+
+    int ret = munmap(s->pOri, 12);
+    // free(s->pOri);
+    // if (ret < 0) {
+    //     perror("mmumap");
+    //     exit(4);
+    // }
 }
 
 static inline int normalize_double(int *n, double d)
@@ -758,9 +787,13 @@ static int filter_frame(AVFilterLink *link, AVFrame *frame)
     if(fr_idx == 1)
         av_log(ctx, AV_LOG_INFO, "[Project Filter] filter_frame(): frame: %d, pts: %lld, timestamp: %lld, time: %f, timebase: %f\n", fr_idx, frame->pts, frame->best_effort_timestamp, fr_t, s->tb);
 
-    rotations[0] = s->xr;
-    rotations[1] = s->yr;
-    rotations[2] = s->zr;
+    // rotations[0] = s->xr;
+    // rotations[1] = s->yr;
+    // rotations[2] = s->zr;
+
+    rotations[0] = *(s->pOri);
+    rotations[1] = *(s->pOri+1);
+    rotations[2] = *(s->pOri+2);
 
     if(s->ors->nr > 0){
         for(i = 0; i < s->ors->nr; i++){
@@ -774,9 +807,9 @@ static int filter_frame(AVFilterLink *link, AVFrame *frame)
             if(args[0] > fr_t + s->tb)
                 break;
 
-            rotations[0] = args[2];
-            rotations[1] = args[3];
-            rotations[2] = 0.0f;
+            rotations[0] = args[1];
+            rotations[1] = args[2];
+            rotations[2] = args[3];
         }
     }
 
@@ -954,6 +987,8 @@ static int filter_frame(AVFilterLink *link, AVFrame *frame)
 
     if(frame->data[3])
         memset(frame->data[3], 255, frame->height * frame->linesize[3]);
+
+    av_dict_set(&(frame->metadata), "orientation_timestamp", "0.123", 0);
 
     return ff_filter_frame(link->dst->outputs[0], frame);
 }
